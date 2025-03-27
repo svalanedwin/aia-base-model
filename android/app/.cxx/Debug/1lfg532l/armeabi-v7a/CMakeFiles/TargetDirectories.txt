@@ -1,0 +1,2 @@
+/Users/shamilijenifferr/VsCodeProjects/flutter-task/aia_base_model/android/app/.cxx/Debug/1lfg532l/armeabi-v7a/CMakeFiles/edit_cache.dir
+/Users/shamilijenifferr/VsCodeProjects/flutter-task/aia_base_model/android/app/.cxx/Debug/1lfg532l/armeabi-v7a/CMakeFiles/rebuild_cache.dir

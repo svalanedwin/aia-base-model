@@ -1,0 +1,1 @@
+/Users/shamilijenifferr/VsCodeProjects/flutter-task/aia_base_model/build/app/intermediates/cxx/Debug/613y225e/obj/armeabi-v7a
