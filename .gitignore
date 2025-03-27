@@ -28,6 +28,8 @@
 /android/key.properties
 *.jks
 **/*.keystore
+*.env
+*.key
 
 # iOS/Xcode related
 /ios/**/*.mode1v3

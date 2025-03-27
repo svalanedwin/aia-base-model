@@ -2,6 +2,7 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart'; // Needed for compute()
 import 'package:flutter/widgets.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart' show dotenv;
 import 'package:http/http.dart' as http;
 
 class ChatService extends ChangeNotifier {
@@ -27,9 +28,9 @@ class ChatService extends ChangeNotifier {
 // Move AI call to an isolate (avoids blocking UI)
 Future<String> fetchAIResponse(String prompt) async {
   try {
-    final apiKey = ''; 
+    String apiKey = dotenv.env['OPENAI_API_KEY'] ?? '';
 
-    if (apiKey == null || apiKey.isEmpty) {
+    if (apiKey.isEmpty) {
       return "Error: API key not found!";
     }
 
