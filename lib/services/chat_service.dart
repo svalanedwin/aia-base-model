@@ -1,13 +1,14 @@
-
 import 'dart:convert';
-import 'package:flutter/foundation.dart'; // Needed for compute()
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart' show dotenv;
 import 'package:http/http.dart' as http;
 
 class ChatService extends ChangeNotifier {
+  final String apiKey;
   List<String> messages = [];
   TextEditingController controller = TextEditingController();
+
+  ChatService(this.apiKey);
 
   Future<void> sendMessage() async {
     String userMessage = controller.text;
@@ -16,8 +17,8 @@ class ChatService extends ChangeNotifier {
     messages.add("You: $userMessage");
     notifyListeners();
 
-    // Offload AI call to a separate isolate
-    String aiResponse = await compute(fetchAIResponse, userMessage);
+    // Offload AI call to a separate isolate (avoids blocking UI)
+    String aiResponse = await compute(fetchAIResponse, {'prompt': userMessage, 'apiKey': apiKey});
     messages.add("AI: $aiResponse");
     notifyListeners();
 
@@ -26,29 +27,32 @@ class ChatService extends ChangeNotifier {
 }
 
 // Move AI call to an isolate (avoids blocking UI)
-Future<String> fetchAIResponse(String prompt) async {
+Future<String> fetchAIResponse(Map<String, String> data) async {
   try {
-    String apiKey = dotenv.env['OPENAI_API_KEY'] ?? '';
+    String prompt = data['prompt']!;
+    String apiKey = data['apiKey']!;
 
     if (apiKey.isEmpty) {
       return "Error: API key not found!";
     }
 
     final response = await http.post(
-      Uri.parse("https://api.openai.com/v1/completions"),
-      headers: {
-        "Authorization": "Bearer $apiKey",
-        "Content-Type": "application/json",
-      },
+      Uri.parse("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$apiKey"),
+      headers: {"Content-Type": "application/json"},
       body: jsonEncode({
-        "model": "gpt-3.5-turbo",
-        "messages": [{"role": "user", "content": prompt}],
+        "contents": [
+          {
+            "parts": [
+              {"text": prompt}
+            ]
+          }
+        ]
       }),
     );
 
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
-      return data["choices"][0]["message"]["content"] ?? "No response from AI.";
+      return data["candidates"]?[0]["content"]["parts"]?[0]["text"] ?? "No response from AI.";
     } else {
       return "Error: ${response.statusCode} - ${response.body}";
     }
