@@ -1,37 +1,66 @@
 import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
-class STTService extends ChangeNotifier {
+class STTService with ChangeNotifier {
   final SpeechToText _speech = SpeechToText();
   bool isListening = false;
-  String text = ""; // Recognized speech text
+  String _currentText = "";
+  String _finalText = "";
 
-  // Start listening to speech
-  Future<void> startListening() async {
-    bool available = await _speech.initialize(onStatus: (status) {
-      print("STT Status: $status");
-    }, onError: (errorNotification) {
-      print("STT Error: $errorNotification");
-    });
-    
-    if (available) {
-      isListening = true;
-      notifyListeners();  // Notify listeners that we are listening
-      _speech.listen(onResult: (result) {
-        text = result.recognizedWords;  // Update recognized words
-        notifyListeners();  // Notify listeners for UI update
-      });
-    } else {
-      // Handle case if STT initialization fails
-      text = "Speech recognition is not available.";
+  String get currentText => _currentText;
+  String get finalText => _finalText;
+
+  Future<bool> initialize() async {
+    return await _speech.initialize(
+      onStatus: (status) {
+        if (status == 'done') {
+          stopListening();
+        }
+      },
+      onError: (error) {
+        stopListening();
+        _currentText = "Error: ${error.errorMsg}";
+        notifyListeners();
+      },
+    );
+  }
+
+  Future<bool> startListening() async {
+    if (!await initialize()) return false;
+
+    _currentText = "";
+    _finalText = "";
+    isListening = true;
+    notifyListeners();
+
+    await _speech.listen(
+      onResult: (result) {
+        if (result.finalResult) {
+          _finalText = result.recognizedWords;
+        }
+        _currentText = result.recognizedWords;
+        notifyListeners();
+      },
+      listenOptions: SpeechListenOptions(
+        partialResults: true,
+        cancelOnError: true,
+      ),
+    );
+
+    return true;
+  }
+
+  Future<void> stopListening() async {
+    if (isListening) {
+      await _speech.stop();
+      isListening = false;
       notifyListeners();
     }
   }
 
-  // Stop listening to speech
-  void stopListening() {
-    isListening = false;
-    _speech.stop();
-    notifyListeners();  // Notify listeners for UI update
+  void clearText() {
+    _currentText = "";
+    _finalText = "";
+    notifyListeners();
   }
 }
