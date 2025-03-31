@@ -12,7 +12,7 @@ class ChatScreen extends StatefulWidget {
   _ChatScreenState createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
+class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, TickerProviderStateMixin {
   final TTSService _ttsService = TTSService();
   final ScrollController _scrollController = ScrollController();
   final FocusNode _textFieldFocus = FocusNode();
@@ -22,10 +22,12 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   bool _showTranscription = false;
   String _transcriptionText = "";
   DateTime? _pressStartTime;
-
+  bool _isSending = false;
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    
     _micAnimationController = AnimationController(
       vsync: this,
       duration: Duration(milliseconds: 1000),
@@ -41,15 +43,35 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final chatService = Provider.of<ChatService>(context, listen: false);
       chatService.addListener(_scrollToBottom);
+      _initializeListening();
     });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _scrollController.dispose();
     _textFieldFocus.dispose();
     _micAnimationController?.dispose();
+    final sttService = Provider.of<STTService>(context, listen: false);
+    sttService.stopListening();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final sttService = Provider.of<STTService>(context, listen: false);
+    if (state == AppLifecycleState.resumed) {
+      _initializeListening();
+    } else if (state == AppLifecycleState.paused) {
+      sttService.stopListening();
+    }
+  }
+
+  Future<void> _initializeListening() async {
+    final sttService = Provider.of<STTService>(context, listen: false);
+    await sttService.initialize();
+    await sttService.startListening();
   }
 
   void _scrollToBottom() {
@@ -76,7 +98,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     sttService.clearText();
     chatService.controller.clear();
     
-    bool success = await sttService.startListening();
+    bool success = await sttService.startListening(forceListen: true);
     
     if (!mounted) return;
     
@@ -94,17 +116,259 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     if (sttService.isListening) {
       await sttService.stopListening();
       
-      // Wait for final transcription
-      await Future.delayed(Duration(milliseconds: 300));
-      
-      if (sttService.finalText.isNotEmpty) {
+      if (sttService.finalText.isNotEmpty && !sttService.isWaitingForWakeWord) {
         setState(() {
           _transcriptionText = sttService.finalText;
           _showTranscription = true;
         });
       }
+      
+      // Restart listening for wake word
+      _initializeListening();
     }
   }
+
+ // In your _buildWakeWordUI method, replace with this improved version:
+Widget _buildWakeWordUI(STTService sttService, ChatService chatService) {
+  return AnimatedSwitcher(
+    duration: Duration(milliseconds: 300),
+    child: sttService.isWaitingForWakeWord
+        ? _buildWakeWordPrompt()
+        : sttService.isActiveListening
+            ? _buildActiveListeningUI(sttService, chatService)
+            : SizedBox(key: ValueKey('empty')),
+  );
+}
+
+Widget _buildWakeWordPrompt() {
+  return Container(
+    key: ValueKey('wake-word'),
+    padding: EdgeInsets.all(12),
+    margin: EdgeInsets.only(bottom: 8),
+    decoration: BoxDecoration(
+      color: Colors.blue.withOpacity(0.1),
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: Colors.blue.withOpacity(0.3)),
+    ),
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(Icons.mic, color: Colors.blue, size: 20),
+        SizedBox(width: 8),
+        Text(
+          "Say 'Hey' to activate voice",
+          style: TextStyle(color: Colors.blue),
+        ),
+      ],
+    ),
+  );
+}
+Widget _buildActiveListeningUI(STTService sttService, ChatService chatService) {
+  return ListenableBuilder(
+    listenable: sttService,
+    builder: (context, _) {
+      String displayText = _processTextAfterWakeWord(sttService.currentText);
+      
+      return AnimatedContainer(
+        duration: Duration(milliseconds: 200),
+        padding: EdgeInsets.all(12),
+        margin: EdgeInsets.only(bottom: 8),
+        decoration: BoxDecoration(
+          color: Colors.green.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.green.withOpacity(0.3)),
+        ),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                _buildListeningIndicator(sttService),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        sttService.isProcessing ? "Processing..." : "Listening...",
+                        style: TextStyle(
+                          color: Colors.green,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      SizedBox(height: 4),
+                      AnimatedSwitcher(
+                        duration: Duration(milliseconds: 150),
+                        child: displayText.isNotEmpty
+                            ? Text(
+                                key: ValueKey(displayText),
+                                displayText,
+                                style: TextStyle(color: Colors.white70),
+                              )
+                            : Text(
+                                "Speak now",
+                                style: TextStyle(color: Colors.white70),
+                              ),
+                      ),
+                    ],
+                  ),
+                ),
+                ..._buildActionButtons(sttService, chatService, displayText),
+              ],
+            ),
+            if (sttService.isProcessing) _buildProcessingIndicator(),
+          ],
+        ),
+      );
+    },
+  );
+}
+String _processTextAfterWakeWord(String rawText) {
+  if (rawText.isEmpty) return "";
+  
+  // Case-insensitive search for first 'hey'
+  final lowerText = rawText.toLowerCase();
+  final heyIndex = lowerText.indexOf('hey');
+  
+  if (heyIndex == -1) return ""; // No hey found
+  
+  // Get text after hey and clean it up
+  String processedText = rawText.substring(heyIndex + 3).trim();
+  
+  // Additional cleanup:
+  // 1. Remove any leading/trailing punctuation
+  processedText = processedText.replaceAll(RegExp(r'^[^\w]+|[^\w]+$'), '');
+  // 2. Remove any remaining 'hey' occurrences
+  processedText = processedText.replaceAll(RegExp(r'\bhey\b', caseSensitive: false), '');
+  // 3. Normalize whitespace
+  processedText = processedText.replaceAll(RegExp(r'\s+'), ' ').trim();
+  
+  return processedText;
+}
+
+// Add these helper methods to your _ChatScreenState class:
+Future<void> _stopListeningWithFeedback(STTService sttService) async {
+  try {
+    await sttService.stopListening();
+    // Show brief feedback without restarting
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text("Listening stopped"),
+        duration: Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  } catch (e) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("Error stopping: ${e.toString()}")),
+    );
+  }
+}
+
+Future<void> _sendAndStopListening(STTService sttService, ChatService chatService) async {
+  setState(() {
+    sttService.setProcessing(true);
+  });
+  
+  try {
+    // Stop listening first
+    await sttService.stopListening();
+    
+    // Only send if we have text
+    if (sttService.currentText.isNotEmpty) {
+      chatService.controller.text = sttService.currentText;
+      await chatService.sendMessage();
+    }
+    
+    await Future.delayed(Duration(milliseconds: 300)); // Smooth transition
+  } catch (e) {
+    print('Error sending message: $e');
+  } finally {
+    if (mounted) {
+      setState(() {
+        sttService.setProcessing(false);
+      });
+    }
+  }
+}
+Widget _buildListeningIndicator(STTService sttService) {
+  return sttService.isProcessing
+      ? SizedBox(
+          width: 24,
+          height: 24,
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+            valueColor: AlwaysStoppedAnimation<Color>(Colors.green),
+          ),
+        )
+      : Lottie.asset(
+          'assets/wave_animation.json',
+          width: 60,
+          height: 30,
+          fit: BoxFit.contain,
+        );
+}
+List<Widget> _buildActionButtons(STTService sttService, ChatService chatService, String displayText) {
+  if (sttService.isProcessing) return [];
+  
+  return [
+    IconButton(
+      icon: Icon(Icons.close, color: Colors.grey),
+      onPressed: () async {
+        await _stopListeningWithFeedback(sttService);
+      },
+    ),
+    if (displayText.isNotEmpty)
+      IconButton(
+        icon: Icon(Icons.send, color: Colors.blue),
+        onPressed: () async {
+          await _sendProcessedTextToAI(sttService, chatService);
+        },
+      ),
+  ];
+}
+Future<void> _sendProcessedTextToAI(STTService sttService, ChatService chatService) async {
+  if (_isSending) return;
+  _isSending = true;
+
+  try {
+    String processedText = _processTextAfterWakeWord(sttService.currentText);
+    
+    if (processedText.isNotEmpty) {
+      // Clear text immediately
+      sttService.clearText();
+      
+      // Send to AI
+      chatService.controller.text = processedText;
+      await chatService.sendMessage();
+      
+      // Stop listening and reset to wake word mode
+      await sttService.stopListening();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Message sent!"),
+          duration: Duration(seconds: 1),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  } catch (e) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("Failed to send: ${e.toString()}")),
+    );
+  } finally {
+    _isSending = false;
+  }
+}
+Widget _buildProcessingIndicator() {
+  return Padding(
+    padding: const EdgeInsets.only(top: 8.0),
+    child: LinearProgressIndicator(
+      backgroundColor: Colors.green.withOpacity(0.2),
+      valueColor: AlwaysStoppedAnimation<Color>(Colors.green),
+    ),
+  );
+}
 
   Widget _buildTranscriptionUI(ChatService chatService) {
     return AnimatedSwitcher(
@@ -151,19 +415,23 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
                     ElevatedButton(
-                      onPressed: () {
-                        if (_transcriptionText.isNotEmpty) {
-                          chatService.controller.text = _transcriptionText;
-                          chatService.sendMessage();
-                          setState(() {
-                            _showTranscription = false;
-                            _transcriptionText = "";
-                          });
-                        }
-                      },
+                      onPressed: chatService.isTyping
+                        ? null
+                        : () {
+                            if (_transcriptionText.isNotEmpty) {
+                              chatService.controller.text = _transcriptionText;
+                              chatService.sendMessage();
+                              setState(() {
+                                _showTranscription = false;
+                                _transcriptionText = "";
+                              });
+                            }
+                          },
                       child: Text("Send"),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: Color(0xFF10A37F),
+                        backgroundColor: chatService.isTyping 
+                          ? Colors.grey 
+                          : Color(0xFF10A37F),
                       ),
                     ),
                   ],
@@ -176,62 +444,73 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Widget _buildInputField(ChatService chatService, STTService sttService) {
-    return Container(
-      color: Color(0xFF40414F),
-      padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      child: Row(
-        children: [
-          GestureDetector(
-            onTapDown: (_) => _onMicPressed(sttService, chatService),
-            onTapUp: (_) => _onMicReleased(sttService, chatService),
-            onTapCancel: () => _onMicReleased(sttService, chatService),
-            child: AnimatedBuilder(
-              animation: _micAnimationController!,
-              builder: (context, child) {
-                return Transform.scale(
-                  scale: _isPressingMic ? _micAnimation!.value : 1.0,
-                  child: Container(
-                    padding: EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: _isPressingMic ? Colors.red.withOpacity(0.2) : Colors.transparent,
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(
-                      _isPressingMic ? Icons.mic : Icons.mic_none,
-                      color: _isPressingMic ? Colors.red : Colors.white,
-                    ),
+  return Container(
+    color: Color(0xFF40414F),
+    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    child: Row(
+      children: [
+        GestureDetector(
+          onTapDown: (_) => _onMicPressed(sttService, chatService),
+          onTapUp: (_) => _onMicReleased(sttService, chatService),
+          onTapCancel: () => _onMicReleased(sttService, chatService),
+          child: AnimatedBuilder(
+            animation: _micAnimationController!,
+            builder: (context, child) {
+              return Transform.scale(
+                scale: _isPressingMic ? _micAnimation!.value : 1.0,
+                child: Container(
+                  padding: EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: _isPressingMic ? Colors.red.withOpacity(0.2) : Colors.transparent,
+                    shape: BoxShape.circle,
                   ),
-                );
-              },
-            ),
+                  child: Icon(
+                    _isPressingMic ? Icons.mic : Icons.mic_none,
+                    color: _isPressingMic ? Colors.red : Colors.white,
+                  ),
+                ),
+              );
+            },
           ),
-          
-          Expanded(
-            child: TextField(
-              focusNode: _textFieldFocus,
-              controller: chatService.controller,
-              decoration: InputDecoration(
-                hintText: "Type or hold mic to speak",
-                hintStyle: TextStyle(color: Colors.white70),
-                border: InputBorder.none,
-                contentPadding: EdgeInsets.symmetric(vertical: 10),
-              ),
-              style: TextStyle(color: Colors.white),
-              onSubmitted: (_) => chatService.sendMessage(),
+        ),
+
+        // Input Field
+        Expanded(
+          child: TextField(
+            focusNode: _textFieldFocus,
+            controller: chatService.controller,
+            decoration: InputDecoration(
+              hintText: "Type your message...",
+              hintStyle: TextStyle(color: Colors.white70),
+              border: InputBorder.none,
+              contentPadding: EdgeInsets.symmetric(vertical: 10),
             ),
+            style: TextStyle(color: Colors.white),
+            onSubmitted: (_) {
+              if (!chatService.isTyping && chatService.controller.text.isNotEmpty) {
+                chatService.sendMessage();
+              }
+            },
           ),
-          
-          if (!_isPressingMic && !_showTranscription)
-            IconButton(
-              icon: Icon(Icons.send, color: Colors.white),
-              onPressed: chatService.isTyping 
-                ? null 
-                : () => chatService.sendMessage(),
-            ),
-        ],
-      ),
-    );
-  }
+        ),
+
+        // Send Button
+        if (!_isPressingMic)
+          IconButton(
+            icon: Icon(Icons.send, color: chatService.isTyping ? Colors.grey : Colors.white),
+            onPressed: chatService.isTyping
+                ? null
+                : () {
+                    if (chatService.controller.text.isNotEmpty) {
+                      chatService.sendMessage();
+                    }
+                  },
+          ),
+      ],
+    ),
+  );
+}
+
 
   Widget _buildRecordingIndicator(STTService sttService) {
     return AnimatedSwitcher(
@@ -282,6 +561,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                       onPressed: () {
                         Provider.of<STTService>(context, listen: false).stopListening();
                         setState(() => _isPressingMic = false);
+                        _initializeListening();
                       },
                     ),
                   ],
@@ -330,6 +610,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       body: SafeArea(
         child: Column(
           children: [
+            _buildWakeWordUI(sttService,chatService),
             Expanded(
               child: ListView.builder(
                 controller: _scrollController,
