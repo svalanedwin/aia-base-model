@@ -17,11 +17,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   final ScrollController _scrollController = ScrollController();
   final FocusNode _textFieldFocus = FocusNode();
   AnimationController? _micAnimationController;
-  Animation<double>? _micAnimation;
   bool _isPressingMic = false;
   bool _showTranscription = false;
   String _transcriptionText = "";
-  DateTime? _pressStartTime;
   bool _isSending = false;
   @override
   void initState() {
@@ -33,12 +31,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
       duration: Duration(milliseconds: 1000),
     );
     
-    _micAnimation = Tween(begin: 1.0, end: 1.2).animate(
-      CurvedAnimation(
-        parent: _micAnimationController!,
-        curve: Curves.easeInOut,
-      ),
-    );
     
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final chatService = Provider.of<ChatService>(context, listen: false);
@@ -86,47 +78,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     });
   }
 
-  Future<void> _onMicPressed(STTService sttService, ChatService chatService) async {
-    _pressStartTime = DateTime.now();
-    setState(() {
-      _isPressingMic = true;
-      _showTranscription = false;
-    });
-    _micAnimationController?.repeat(reverse: true);
-    
-    // Clear previous text
-    sttService.clearText();
-    chatService.controller.clear();
-    
-    bool success = await sttService.startListening(forceListen: true);
-    
-    if (!mounted) return;
-    
-    if (!success) {
-      _ttsService.speak("Couldn't start recording. Please check microphone permissions.");
-      _micAnimationController?.stop();
-      setState(() => _isPressingMic = false);
-    }
-  }
 
-  void _onMicReleased(STTService sttService, ChatService chatService) async {
-    setState(() => _isPressingMic = false);
-    _micAnimationController?.stop();
-    
-    if (sttService.isListening) {
-      await sttService.stopListening();
-      
-      if (sttService.finalText.isNotEmpty && !sttService.isWaitingForWakeWord) {
-        setState(() {
-          _transcriptionText = sttService.finalText;
-          _showTranscription = true;
-        });
-      }
-      
-      // Restart listening for wake word
-      _initializeListening();
-    }
-  }
 
  // In your _buildWakeWordUI method, replace with this improved version:
 Widget _buildWakeWordUI(STTService sttService, ChatService chatService) {
@@ -249,47 +201,44 @@ String _processTextAfterWakeWord(String rawText) {
 Future<void> _stopListeningWithFeedback(STTService sttService) async {
   try {
     await sttService.stopListening();
-    // Show brief feedback without restarting
+    // Show bright feedback without restarting
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text("Listening stopped"),
+        content: Text(
+          "Listening stopped",
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
         duration: Duration(seconds: 1),
         behavior: SnackBarBehavior.floating,
+        backgroundColor: Colors.orange[700], // Bright orange
+        elevation: 10,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+        ),
+        margin: EdgeInsets.all(10),
+        padding: EdgeInsets.symmetric(horizontal: 20, vertical: 15),
       ),
     );
   } catch (e) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("Error stopping: ${e.toString()}")),
+      SnackBar(
+        content: Text(
+          "Error stopping: ${e.toString()}",
+          style: TextStyle(color: Colors.white),
+        ),
+        backgroundColor: Colors.red[600], // Bright red
+        behavior: SnackBarBehavior.floating,
+        elevation: 10,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+        ),
+        margin: EdgeInsets.all(10),
+        duration: Duration(seconds: 2),
+      ),
     );
   }
 }
 
-Future<void> _sendAndStopListening(STTService sttService, ChatService chatService) async {
-  setState(() {
-    sttService.setProcessing(true);
-  });
-  
-  try {
-    // Stop listening first
-    await sttService.stopListening();
-    
-    // Only send if we have text
-    if (sttService.currentText.isNotEmpty) {
-      chatService.controller.text = sttService.currentText;
-      await chatService.sendMessage();
-    }
-    
-    await Future.delayed(Duration(milliseconds: 300)); // Smooth transition
-  } catch (e) {
-    print('Error sending message: $e');
-  } finally {
-    if (mounted) {
-      setState(() {
-        sttService.setProcessing(false);
-      });
-    }
-  }
-}
 Widget _buildListeningIndicator(STTService sttService) {
   return sttService.isProcessing
       ? SizedBox(
@@ -427,12 +376,12 @@ Widget _buildProcessingIndicator() {
                               });
                             }
                           },
-                      child: Text("Send"),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: chatService.isTyping 
                           ? Colors.grey 
                           : Color(0xFF10A37F),
                       ),
+                      child: Text("Send"),
                     ),
                   ],
                 ),
@@ -446,34 +395,10 @@ Widget _buildProcessingIndicator() {
   Widget _buildInputField(ChatService chatService, STTService sttService) {
   return Container(
     color: Color(0xFF40414F),
-    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    padding: EdgeInsets.symmetric(horizontal: 15, vertical: 8),
     child: Row(
       children: [
-        GestureDetector(
-          onTapDown: (_) => _onMicPressed(sttService, chatService),
-          onTapUp: (_) => _onMicReleased(sttService, chatService),
-          onTapCancel: () => _onMicReleased(sttService, chatService),
-          child: AnimatedBuilder(
-            animation: _micAnimationController!,
-            builder: (context, child) {
-              return Transform.scale(
-                scale: _isPressingMic ? _micAnimation!.value : 1.0,
-                child: Container(
-                  padding: EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: _isPressingMic ? Colors.red.withOpacity(0.2) : Colors.transparent,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    _isPressingMic ? Icons.mic : Icons.mic_none,
-                    color: _isPressingMic ? Colors.red : Colors.white,
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-
+        
         // Input Field
         Expanded(
           child: TextField(
@@ -757,12 +682,12 @@ Widget _buildProcessingIndicator() {
                               SizedBox(width: 10),
                               ElevatedButton(
                                 onPressed: chatService.stopResponse,
-                                child: Text("Stop"),
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: Colors.red,
                                   padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                                   textStyle: TextStyle(fontSize: 12),
                                 ),
+                                child: Text("Stop"),
                               ),
                             ],
                           ),
