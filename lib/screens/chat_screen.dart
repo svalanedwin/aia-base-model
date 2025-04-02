@@ -25,20 +25,48 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    
-    _micAnimationController = AnimationController(
-      vsync: this,
-      duration: Duration(milliseconds: 1000),
-    );
-    
-    
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final chatService = Provider.of<ChatService>(context, listen: false);
-      chatService.addListener(_scrollToBottom);
-      _initializeListening();
-    });
+  
+  _micAnimationController = AnimationController(
+    vsync: this,
+    duration: Duration(milliseconds: 1000),
+  );
+  
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    _initializeListening();
+  });
   }
-
+ Future<void> _initializeListening() async {
+  final sttService = Provider.of<STTService>(context, listen: false);
+  try {
+    // First try normal initialization
+    if (!await sttService.initialize()) {
+      throw Exception("Failed to initialize speech service");
+    }
+    
+    // Start listening with retry logic
+    await _startListeningWithRetry(sttService);
+  } catch (e) {
+    debugPrint('Initialization error: $e');
+    // Automatic retry after delay
+    await Future.delayed(Duration(seconds: 2));
+    _initializeListening();
+  }
+}
+Future<void> _startListeningWithRetry(STTService sttService, {int retryCount = 0}) async {
+  try {
+    if (!await sttService.startListening()) {
+      throw Exception("Failed to start listening");
+    }
+  } catch (e) {
+    if (retryCount < 3) {
+      debugPrint('Retrying listening start (attempt ${retryCount + 1})');
+      await Future.delayed(Duration(milliseconds: 500 * (retryCount + 1)));
+      await _startListeningWithRetry(sttService, retryCount: retryCount + 1);
+    } else {
+      throw Exception("Max retries reached for listening start");
+    }
+  }
+}
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -50,21 +78,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
     super.dispose();
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    final sttService = Provider.of<STTService>(context, listen: false);
-    if (state == AppLifecycleState.resumed) {
-      _initializeListening();
-    } else if (state == AppLifecycleState.paused) {
+@override
+void didChangeAppLifecycleState(AppLifecycleState state) {
+  final sttService = Provider.of<STTService>(context, listen: false);
+  debugPrint('App state changed: $state');
+  
+  switch (state) {
+    case AppLifecycleState.resumed:
+      if (!sttService.isListening) {
+        _initializeListening();
+      }
+      break;
+    case AppLifecycleState.paused:
       sttService.stopListening();
-    }
+      break;
+    default:
+      break;
   }
-
-  Future<void> _initializeListening() async {
-    final sttService = Provider.of<STTService>(context, listen: false);
-    await sttService.initialize();
-    await sttService.startListening();
-  }
+}
 
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -82,13 +113,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver, Ti
 
  // In your _buildWakeWordUI method, replace with this improved version:
 Widget _buildWakeWordUI(STTService sttService, ChatService chatService) {
-  return AnimatedSwitcher(
-    duration: Duration(milliseconds: 300),
-    child: sttService.isWaitingForWakeWord
-        ? _buildWakeWordPrompt()
-        : sttService.isActiveListening
-            ? _buildActiveListeningUI(sttService, chatService)
-            : SizedBox(key: ValueKey('empty')),
+  return ListenableBuilder(
+    listenable: sttService,
+    builder: (context, _) {
+      return AnimatedSwitcher(
+        duration: Duration(milliseconds: 300),
+        child: sttService.isWaitingForWakeWord
+            ? _buildWakeWordPrompt()
+            : sttService.isActiveListening
+                ? _buildActiveListeningUI(sttService, chatService)
+                : SizedBox.shrink(),
+      );
+    },
   );
 }
 
@@ -115,63 +151,85 @@ Widget _buildWakeWordPrompt() {
     ),
   );
 }
+// In ChatScreen
 Widget _buildActiveListeningUI(STTService sttService, ChatService chatService) {
-  return ListenableBuilder(
-    listenable: sttService,
-    builder: (context, _) {
-      String displayText = _processTextAfterWakeWord(sttService.currentText);
-      
-      return AnimatedContainer(
-        duration: Duration(milliseconds: 200),
-        padding: EdgeInsets.all(12),
-        margin: EdgeInsets.only(bottom: 8),
-        decoration: BoxDecoration(
-          color: Colors.green.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: Colors.green.withOpacity(0.3)),
-        ),
-        child: Column(
+  return AnimatedContainer(
+    duration: Duration(milliseconds: 200),
+    padding: EdgeInsets.all(12),
+    margin: EdgeInsets.only(bottom: 8),
+    decoration: BoxDecoration(
+      color: Colors.green.withOpacity(0.2),
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: Colors.green),
+    ),
+    child: Column(
+      children: [
+        Row(
           children: [
-            Row(
-              children: [
-                _buildListeningIndicator(sttService),
-                SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        sttService.isProcessing ? "Processing..." : "Listening...",
-                        style: TextStyle(
-                          color: Colors.green,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      SizedBox(height: 4),
-                      AnimatedSwitcher(
-                        duration: Duration(milliseconds: 150),
-                        child: displayText.isNotEmpty
-                            ? Text(
-                                key: ValueKey(displayText),
-                                displayText,
-                                style: TextStyle(color: Colors.white70),
-                              )
-                            : Text(
-                                "Speak now",
-                                style: TextStyle(color: Colors.white70),
-                              ),
-                      ),
-                    ],
+            sttService.isProcessing
+                ? CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation(Colors.green),
+                  )
+                : Lottie.asset(
+                    'assets/wave_animation.json',
+                    width: 60,
+                    height: 30,
+                    fit: BoxFit.contain,
                   ),
-                ),
-                ..._buildActionButtons(sttService, chatService, displayText),
-              ],
+            SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    sttService.isProcessing ? "Processing..." : "Listening...",
+                    style: TextStyle(
+                      color: Colors.green,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    sttService.currentText.isNotEmpty
+                        ? sttService.currentText
+                        : "Speak now...",
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ],
+              ),
             ),
-            if (sttService.isProcessing) _buildProcessingIndicator(),
+            IconButton(
+              icon: Icon(Icons.close, color: Colors.red),
+              onPressed: () async {
+                try {
+                  await sttService.stopListening();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text("Returned to wake word mode"),
+                      duration: Duration(seconds: 1),
+                    ),
+                  );
+                } catch (e) {
+                  debugPrint('Error closing listening: $e');
+                  await _initializeListening(); // Full reinitialization if error occurs
+                }
+              },
+            ),
+            if (sttService.currentText.isNotEmpty && !sttService.isProcessing)
+              IconButton(
+                icon: Icon(Icons.send, color: Colors.blue),
+                onPressed: () => _sendProcessedTextToAI(sttService, chatService),
+              ),
           ],
         ),
-      );
-    },
+        if (sttService.isProcessing)
+          LinearProgressIndicator(
+            backgroundColor: Colors.green.withOpacity(0.1),
+            valueColor: AlwaysStoppedAnimation(Colors.green),
+          ),
+      ],
+    ),
   );
 }
 String _processTextAfterWakeWord(String rawText) {
@@ -276,34 +334,23 @@ List<Widget> _buildActionButtons(STTService sttService, ChatService chatService,
   ];
 }
 Future<void> _sendProcessedTextToAI(STTService sttService, ChatService chatService) async {
-  if (_isSending) return;
+  if (_isSending || sttService.currentText.isEmpty) return;
+  
   _isSending = true;
-
   try {
-    String processedText = _processTextAfterWakeWord(sttService.currentText);
+    final textToSend = sttService.currentText;
+    chatService.controller.text = textToSend;
+    await chatService.sendMessage();
     
-    if (processedText.isNotEmpty) {
-      // Clear text immediately
-      sttService.clearText();
-      
-      // Send to AI
-      chatService.controller.text = processedText;
-      await chatService.sendMessage();
-      
-      // Stop listening and reset to wake word mode
-      await sttService.stopListening();
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Message sent!"),
-          duration: Duration(seconds: 1),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
+    // Clear current text but keep listening
+    sttService.clearCurrentText();
   } catch (e) {
+    debugPrint('Error sending message: $e');
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("Failed to send: ${e.toString()}")),
+      SnackBar(
+        content: Text("Failed to send message"),
+        duration: Duration(seconds: 2),
+      ),
     );
   } finally {
     _isSending = false;

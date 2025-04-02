@@ -19,51 +19,161 @@ class STTService with ChangeNotifier {
   bool get isWaitingForWakeWord => _wakeWordMode;
   bool get isActiveListening => !_wakeWordMode && isListening;
   bool get isProcessing => _isProcessing;
+  bool get isWakeWordMode => _wakeWordMode;
+ 
+
+  void setWakeWordMode(bool enabled) {
+  _wakeWordMode = enabled;
+  notifyListeners();
+}
+
+void resetToWakeWordMode() {
+  _wakeWordMode = true;
+  _currentText = "";
+  _finalText = "";
+  notifyListeners();
+}
+void clearCurrentText() {
+  _currentText = "";
+  notifyListeners();
+}
+
+void clearFinalText() {
+  _finalText = "";
+  notifyListeners();
+}
+
+void clearAllText() {
+  _currentText = "";
+  _finalText = "";
+  notifyListeners();
+}
 
   Future<bool> initialize() async {
-    try {
-      _isProcessing = true;
-      notifyListeners();
-      
-      final initialized = await _speech.initialize(
-        onStatus: (status) {
-          if (status == 'done') {
-            _restartListening();
-          }
-        },
-        onError: (error) {
-          _lastError = "Error: ${error.errorMsg}";
+  try {
+    _isProcessing = true;
+    notifyListeners();
+    
+    final initialized = await _speech.initialize(
+      onStatus: (status) {
+        debugPrint('Speech status: $status');
+        if (status == 'notListening' && isListening) {
           _restartListening();
-          notifyListeners();
-        },
-      );
-      
-      return initialized;
-    } catch (e) {
-      _lastError = "Initialization error: $e";
-      return false;
-    } finally {
-      _isProcessing = false;
-      notifyListeners();
-    }
+        }
+      },
+      onError: (error) {
+        _lastError = "Error: ${error.errorMsg}";
+        debugPrint('Speech error: $_lastError');
+        if (isListening) {
+          _restartListening();
+        }
+      },
+    );
+    
+    return initialized;
+  } catch (e) {
+    _lastError = "Initialization error: $e";
+    return false;
+  } finally {
+    _isProcessing = false;
+    notifyListeners();
   }
+}
 
   Future<bool> startListening({bool forceListen = false}) async {
-    if (!await initialize()) return false;
+  if (!await initialize()) return false;
 
-    try {
-      _isProcessing = true;
-      notifyListeners();
+  try {
+    _isProcessing = true;
+    notifyListeners();
 
+    // Don't reset text if we're continuing a session
+    if (!isListening) {
       _currentText = "";
       _finalText = "";
-      _lastError = "";
-      isListening = true;
-      _wakeWordMode = !forceListen;
+    }
+    
+    _lastError = "";
+    isListening = true;
+    _wakeWordMode = !forceListen;
+    _justDetectedWakeWord = false;
+    
+    await _speech.listen(
+      onResult: _handleSpeechResult,
+      listenOptions: SpeechListenOptions(
+        partialResults: true,
+        cancelOnError: true,
+        listenMode: ListenMode.dictation,
+      ),
+    );
+
+    return true;
+  } catch (e) {
+    _lastError = "Start listening error: $e";
+    return false;
+  } finally {
+    _isProcessing = false;
+    notifyListeners();
+  }
+}
+
+  // In STTService
+void _handleSpeechResult(SpeechRecognitionResult result) async {
+  try {
+    _isProcessing = true;
+    notifyListeners();
+    
+    if (_wakeWordMode) {
+      final lowerText = result.recognizedWords.toLowerCase();
+      if (lowerText.contains('hey')) {
+        // Wake word detected - switch to active listening
+        _wakeWordMode = false;
+        _justDetectedWakeWord = true;
+        
+        final heyIndex = lowerText.indexOf('hey');
+        _currentText = result.recognizedWords.substring(heyIndex + 3).trim();
+        
+        debugPrint('Wake word detected - switching to active listening');
+        notifyListeners();
+        
+        // Ensure listening continues
+        if (!isListening) {
+          await startListening();
+        }
+        return;
+      }
+      _currentText = "";
+    } else {
+      // Active listening mode
+      _currentText = result.recognizedWords;
       _justDetectedWakeWord = false;
       
-      notifyListeners();
+      if (result.finalResult) {
+        _finalText = _currentText;
+      }
+    }
+  } catch (e) {
+    _lastError = "Result handling error: $e";
+    debugPrint('Speech result error: $_lastError');
+    await _restartListening();
+  } finally {
+    _isProcessing = false;
+    notifyListeners();
+  }
+}
 
+  Future<void> _restartListening() async {
+  try {
+    if (!isListening) return;
+    
+    _isProcessing = true;
+    notifyListeners();
+    
+    await _speech.stop();
+    await Future.delayed(Duration(milliseconds: 300));
+    
+    // Only restart if we're still supposed to be listening
+    if (isListening) {
       await _speech.listen(
         onResult: _handleSpeechResult,
         listenOptions: SpeechListenOptions(
@@ -72,104 +182,69 @@ class STTService with ChangeNotifier {
           listenMode: ListenMode.dictation,
         ),
       );
-
-      return true;
-    } catch (e) {
-      _lastError = "Start listening error: $e";
-      return false;
-    } finally {
-      _isProcessing = false;
-      notifyListeners();
     }
+  } catch (e) {
+    _lastError = "Restart error: $e";
+    // Attempt to recover
+    await startListening();
+  } finally {
+    _isProcessing = false;
+    notifyListeners();
   }
-
-  void _handleSpeechResult(SpeechRecognitionResult result) {
+}
+Future<void> continueListening() async {
+  if (isListening && !_wakeWordMode) {
     try {
-      _isProcessing = true;
-      
-      if (_wakeWordMode) {
-        // In wake word detection mode
-        final recognizedWords = result.recognizedWords.toLowerCase();
-        if (recognizedWords.contains('hey')) {
-          // Wake word detected - transition to active listening
-          _wakeWordMode = false;
-          _justDetectedWakeWord = true;
-          
-          // Get text after the wake word
-          final wakeWordIndex = recognizedWords.indexOf('hey');
-          final textAfterWakeWord = result.recognizedWords.substring(wakeWordIndex + 3).trim();
-          
-          if (textAfterWakeWord.isNotEmpty) {
-            _currentText = textAfterWakeWord;
-          } else {
-            _currentText = "";
-          }
-        } else {
-          // Completely ignore any text before wake word
-          _currentText = "";
-        }
-      } else {
-        // In active listening mode
-        if (_justDetectedWakeWord) {
-          // First result after wake word - reset to ensure clean state
-          _currentText = result.recognizedWords;
-          _justDetectedWakeWord = false;
-        } else {
-          // Normal active listening
-          _currentText = result.recognizedWords;
-        }
-      }
-      
-      if (result.finalResult) {
-        _finalText = _currentText;
-        if (!_wakeWordMode) {
-          _restartListening();
-        }
-      }
+      await _speech.listen(
+        onResult: _handleSpeechResult,
+        listenOptions: SpeechListenOptions(
+          partialResults: true,
+          cancelOnError: true,
+          listenMode: ListenMode.dictation,
+        ),
+      );
     } catch (e) {
-      _lastError = "Result handling error: $e";
-    } finally {
-      _isProcessing = false;
-      notifyListeners();
+      await _restartListening();
     }
   }
-
-  Future<void> _restartListening() async {
-    try {
-      _isProcessing = true;
-      notifyListeners();
-      
-      await stopListening();
-      await Future.delayed(Duration(milliseconds: 300));
-      await startListening();
-    } catch (e) {
-      _lastError = "Restart error: $e";
-    } finally {
-      _isProcessing = false;
-      notifyListeners();
-    }
-  }
+}
 
   Future<void> stopListening() async {
-    try {
-      if (isListening) {
-        _isProcessing = true;
-        notifyListeners();
-        
-        await _speech.stop();
-        isListening = false;
-        _wakeWordMode = true;
-        _currentText = "";
-        _finalText = "";
-        _justDetectedWakeWord = false;
-        notifyListeners();
-      }
-    } catch (e) {
-      _lastError = "Stop listening error: $e";
-    } finally {
-      _isProcessing = false;
-      notifyListeners();
-    }
+   if (!isListening) return;
+  
+  try {
+    _isProcessing = true;
+    notifyListeners();
+    
+    await _speech.stop();
+    
+    // Reset only the necessary states
+    _wakeWordMode = true;
+    _currentText = "";
+    _finalText = "";
+    _justDetectedWakeWord = false;
+    
+    // Immediately restart listening for wake word
+    await Future.delayed(Duration(milliseconds: 300)); // Small delay for stability
+    await _speech.listen(
+      onResult: _handleSpeechResult,
+      listenOptions: SpeechListenOptions(
+        partialResults: true,
+        cancelOnError: true,
+        listenMode: ListenMode.dictation,
+      ),
+    );
+    
+    debugPrint('Successfully returned to wake word listening');
+  } catch (e) {
+    _lastError = "Error stopping active listening: $e";
+    debugPrint('Error returning to wake word: $_lastError');
+    // Attempt full restart if partial restart fails
+    await startListening();
+  } finally {
+    _isProcessing = false;
+    notifyListeners();
+  }
   }
 
   void clearText() {
