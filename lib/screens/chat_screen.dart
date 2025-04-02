@@ -97,17 +97,6 @@ void didChangeAppLifecycleState(AppLifecycleState state) {
   }
 }
 
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
-    });
-  }
 
 
 
@@ -232,107 +221,9 @@ Widget _buildActiveListeningUI(STTService sttService, ChatService chatService) {
     ),
   );
 }
-String _processTextAfterWakeWord(String rawText) {
-  if (rawText.isEmpty) return "";
-  
-  // Case-insensitive search for first 'hey'
-  final lowerText = rawText.toLowerCase();
-  final heyIndex = lowerText.indexOf('hey');
-  
-  if (heyIndex == -1) return ""; // No hey found
-  
-  // Get text after hey and clean it up
-  String processedText = rawText.substring(heyIndex + 3).trim();
-  
-  // Additional cleanup:
-  // 1. Remove any leading/trailing punctuation
-  processedText = processedText.replaceAll(RegExp(r'^[^\w]+|[^\w]+$'), '');
-  // 2. Remove any remaining 'hey' occurrences
-  processedText = processedText.replaceAll(RegExp(r'\bhey\b', caseSensitive: false), '');
-  // 3. Normalize whitespace
-  processedText = processedText.replaceAll(RegExp(r'\s+'), ' ').trim();
-  
-  return processedText;
-}
 
 // Add these helper methods to your _ChatScreenState class:
-Future<void> _stopListeningWithFeedback(STTService sttService) async {
-  try {
-    await sttService.stopListening();
-    // Show bright feedback without restarting
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          "Listening stopped",
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-        ),
-        duration: Duration(seconds: 1),
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: Colors.orange[700], // Bright orange
-        elevation: 10,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-        ),
-        margin: EdgeInsets.all(10),
-        padding: EdgeInsets.symmetric(horizontal: 20, vertical: 15),
-      ),
-    );
-  } catch (e) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          "Error stopping: ${e.toString()}",
-          style: TextStyle(color: Colors.white),
-        ),
-        backgroundColor: Colors.red[600], // Bright red
-        behavior: SnackBarBehavior.floating,
-        elevation: 10,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-        ),
-        margin: EdgeInsets.all(10),
-        duration: Duration(seconds: 2),
-      ),
-    );
-  }
-}
 
-Widget _buildListeningIndicator(STTService sttService) {
-  return sttService.isProcessing
-      ? SizedBox(
-          width: 24,
-          height: 24,
-          child: CircularProgressIndicator(
-            strokeWidth: 2,
-            valueColor: AlwaysStoppedAnimation<Color>(Colors.green),
-          ),
-        )
-      : Lottie.asset(
-          'assets/wave_animation.json',
-          width: 60,
-          height: 30,
-          fit: BoxFit.contain,
-        );
-}
-List<Widget> _buildActionButtons(STTService sttService, ChatService chatService, String displayText) {
-  if (sttService.isProcessing) return [];
-  
-  return [
-    IconButton(
-      icon: Icon(Icons.close, color: Colors.grey),
-      onPressed: () async {
-        await _stopListeningWithFeedback(sttService);
-      },
-    ),
-    if (displayText.isNotEmpty)
-      IconButton(
-        icon: Icon(Icons.send, color: Colors.blue),
-        onPressed: () async {
-          await _sendProcessedTextToAI(sttService, chatService);
-        },
-      ),
-  ];
-}
 Future<void> _sendProcessedTextToAI(STTService sttService, ChatService chatService) async {
   if (_isSending || sttService.currentText.isEmpty) return;
   
@@ -355,15 +246,6 @@ Future<void> _sendProcessedTextToAI(STTService sttService, ChatService chatServi
   } finally {
     _isSending = false;
   }
-}
-Widget _buildProcessingIndicator() {
-  return Padding(
-    padding: const EdgeInsets.only(top: 8.0),
-    child: LinearProgressIndicator(
-      backgroundColor: Colors.green.withOpacity(0.2),
-      valueColor: AlwaysStoppedAnimation<Color>(Colors.green),
-    ),
-  );
 }
 
   Widget _buildTranscriptionUI(ChatService chatService) {

@@ -10,7 +10,6 @@ class STTService with ChangeNotifier {
   String _finalText = "";
   String _lastError = "";
   bool _wakeWordMode = true;
-  bool _justDetectedWakeWord = false;
 
   // Getters
   String get currentText => _currentText;
@@ -96,7 +95,6 @@ void clearAllText() {
     _lastError = "";
     isListening = true;
     _wakeWordMode = !forceListen;
-    _justDetectedWakeWord = false;
     
     await _speech.listen(
       onResult: _handleSpeechResult,
@@ -128,7 +126,6 @@ void _handleSpeechResult(SpeechRecognitionResult result) async {
       if (lowerText.contains('hey')) {
         // Wake word detected - switch to active listening
         _wakeWordMode = false;
-        _justDetectedWakeWord = true;
         
         final heyIndex = lowerText.indexOf('hey');
         _currentText = result.recognizedWords.substring(heyIndex + 3).trim();
@@ -146,7 +143,6 @@ void _handleSpeechResult(SpeechRecognitionResult result) async {
     } else {
       // Active listening mode
       _currentText = result.recognizedWords;
-      _justDetectedWakeWord = false;
       
       if (result.finalResult) {
         _finalText = _currentText;
@@ -222,7 +218,6 @@ Future<void> continueListening() async {
     _wakeWordMode = true;
     _currentText = "";
     _finalText = "";
-    _justDetectedWakeWord = false;
     
     // Immediately restart listening for wake word
     await Future.delayed(Duration(milliseconds: 300)); // Small delay for stability
